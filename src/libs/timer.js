@@ -1,69 +1,79 @@
-var events = require('events');
+const EventEmitter = require('events').EventEmitter;
 
-function Timer() {
-  var currentDate = null;
-  var endDate = null;
-  var interval = null;
-  var intervalDelay = 100;
+const config = require('../config');
+const { actions, timerStates } = config;
 
-  var object = new events.EventEmitter;
+const TimerPrototype = {
+  ...EventEmitter.prototype(),
 
-  object.start = function() {
-    currentDate = new Date();
-    endDate = new Date(currentDate.getTime() + (25 * 60 * 1000));
+  // Properties
+  timerState: timerStates.INACTIVE,
+  endDate: null,
+  interval: null,
+  currentTime = () => new Date().getTime(),
+  timeLeft = () => endDate? endDate.getTime() - currentTime() : null,
 
-    interval = setInterval(function () { object.update("focus"); }, intervalDelay);
-    object.emit('start');
-  }
-
-  object.shortBreak = function() {
-    currentDate = new Date();
-    endDate = new Date(currentDate.getTime() + (5 * 60 * 1000));
-
-    interval = setInterval(function () { object.update("break"); }, intervalDelay);
-    object.emit('shortBreak');
-  }
-
-  object.longBreak = function () {
-    currentDate = new Date();
-    endDate = new Date(currentDate.getTime() + (10 * 60 * 1000));
-
-    interval = setInterval(function () { object.update("break"); }, intervalDelay);
-    object.emit('longBreak');
-  }
-
-  object.update = function(mode) {
-    var time = object.getCurrentTime();
-
-    if (time.minutes <= 0) {
-      if (time.seconds <= 0) {
-        object.stop(false, mode);
-        return;
-      }
-    }
-
-    object.emit('update', { mode: mode, time: time });
-  }
-
-  object.stop = function(interrupt, mode) {
-    if (interrupt === typeof 'undefined' || interrupt == null) {
-      interrupt = true;
-    }
-
+  // Helpers and generic methods
+  setTimerState = (newState) => {
+    this.timerState = newState;
+    this.emit(action.TIMER_CHANGED_STATE, newState);
+  },
+  startTimer = ({ timerDuration, eventToEmit }) => () => {
+    this.endDate = new Date(currentTime() + (timerDuration));
+    this.interval = setInterval(this.emit(actions.TICK), config.oneSecond);
+    this.emit(eventToEmit);
+  },
+  goInactive = () => {
     clearInterval(interval);
-    object.emit('stop', { interrupt: interrupt, mode: mode });
-  }
+    this.setState(states.INACTIVE);
+  },
 
-  object.getCurrentTime = function() {
-    var timeDifference = endDate.getTime() - new Date().getTime();
-
-    return {
-      minutes: Math.floor(timeDifference / 60000),
-      seconds: Math.floor((timeDifference % 60000) / 1000)
-    };
-  }
-
-  return object;
+  // Event handlers
+  startPomodoro = startTimer({
+    timerDuration: config.pomodoroLength,
+    eventToEmit: actions.POMODORO_TIMER_STARTED,
+  }),
+  startShortBreak = startTimer({
+    timerDuration: config.shortBreakLength,
+    eventToEmit: actions.SHORT_BREAK_TIMER_STARTED,
+  }),
+  startLongBreak = startTimer({
+    timerDuration: config.longBreakLength,
+    eventToEmit: actions.LONG_BREAK_TIMER_STARTED,
+  }),
+  forceStop = () => {
+    goInactive();
+    this.emit(actions.TIMER_WAS_STOPPED);
+  },
+  checkIfTimerEnded = () => {
+    const timeLeft = this.timeLeft();
+    if (timeLeft && timeLeft.minutes <= 0 && timeLeft.seconds <= 0) {
+      const cases = {
+        [timerStates.POMODORO]: actions.POMODORO_TIMER_ENDED,
+        [timerStates.SHORT_BREAK]: actions.SHORT_BREAK_TIMER_ENDED,
+        [timerStates.LONG_BREAK]: action.LONG_BREAK_TIMER_ENDED,
+      }
+      emit(cases[this.timerState]);
+    }
+  },
 }
 
-module.exports = new Timer;
+function Timer() {
+  const timer = TimerPrototype();
+
+  // Listen to events from App
+  timer.on(actions.START_POMODORO, timer.startPomodoro);
+  timer.on(actions.START_SHORT_BREAK, timer.startShortBreak);
+  timer.on(actions.START_LONG_BREAK, timer.startLongBreak);
+  timer.on(actions.STOP_TIMER, timer.forceStop);
+
+  // Listen to events from Timer
+  timer.on(actions.TICK, timer.checkIfTimerEnded);
+  timer.on(actions.POMODORO_TIMER_ENDED, timer.startShortBreak);
+  timer.on(actions.SHORT_BREAK_TIMER_ENDED, timer.goInactive);
+  timer.on(actions.LONG_BREAK_TIMER_ENDED, timer.goInactive);
+
+  return Timer;
+}
+
+module.exports = Timer();
